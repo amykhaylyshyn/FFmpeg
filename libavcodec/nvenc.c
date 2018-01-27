@@ -1449,8 +1449,13 @@ static int nvenc_register_frame(AVCodecContext *avctx, const AVFrame *frame)
     int i, idx, ret;
 
     for (i = 0; i < ctx->nb_registered_frames; i++) {
-        if (ctx->registered_frames[i].ptr == (CUdeviceptr)frame->data[0])
+        if (ctx->registered_frames[i].ptr == (CUdeviceptr)frame->data[0]) {
+            if (ctx->registered_frames[i].mapped) {
+                av_log(avctx, AV_LOG_FATAL, "An already mapped frame received twice\n");
+                return AVERROR(EINVAL);
+            }
             return i;
+        }
     }
 
     idx = nvenc_find_free_reg_resource(avctx);
@@ -1500,8 +1505,10 @@ static int nvenc_upload_frame(AVCodecContext *avctx, const AVFrame *frame,
         }
 
         res = av_frame_ref(nvenc_frame->in_ref, frame);
-        if (res < 0)
+        if (res < 0) {
+            av_log(avctx, AV_LOG_ERROR, "Could not reference an input CUDA frame\n");
             return res;
+        }
 
         nvenc_frame->in_map.version = NV_ENC_MAP_INPUT_RESOURCE_VER;
         nvenc_frame->in_map.registeredResource = ctx->registered_frames[reg_idx].regptr;
@@ -1668,6 +1675,7 @@ static int process_output_surface(AVCodecContext *avctx, AVPacket *pkt, NvencSur
         p_nvenc->nvEncUnmapInputResource(ctx->nvencoder, tmpoutsurf->in_map.mappedResource);
         av_frame_unref(tmpoutsurf->in_ref);
         ctx->registered_frames[tmpoutsurf->reg_idx].mapped = 0;
+        ctx->registered_frames[tmpoutsurf->reg_idx].ptr    = 0;
 
         tmpoutsurf->input_surface = NULL;
     }

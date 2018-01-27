@@ -53,10 +53,10 @@ int cuvid_init(AVCodecContext *avctx)
 
     frames_ctx = (AVHWFramesContext*)ist->hw_frames_ctx->data;
 
-    frames_ctx->format = AV_PIX_FMT_CUDA;
+    frames_ctx->format    = AV_PIX_FMT_CUDA;
     frames_ctx->sw_format = avctx->sw_pix_fmt;
-    frames_ctx->width = avctx->width;
-    frames_ctx->height = avctx->height;
+    frames_ctx->width     = FFALIGN(avctx->width, 32);
+    frames_ctx->height    = FFALIGN(avctx->height, 32);
 
     av_log(avctx, AV_LOG_DEBUG, "Initializing CUDA frames context: sw_format = %s, width = %d, height = %d\n",
            av_get_pix_fmt_name(frames_ctx->sw_format), frames_ctx->width, frames_ctx->height);
