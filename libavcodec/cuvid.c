@@ -250,6 +250,8 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
         if (ctx->internal_error < 0)
             return 0;
         ctx->cudecoder = NULL;
+        /* We've destroyed the old decoder, now frames present in queue are no longer valid */
+        av_fifo_freep(&ctx->frame_queue);
     }
 
     if (hwframe_ctx->pool && (
@@ -300,6 +302,12 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
 
     if (ctx->deint_mode_current != cudaVideoDeinterlaceMode_Weave && !ctx->drop_second_field)
         avctx->framerate = av_mul_q(avctx->framerate, (AVRational){2, 1});
+
+    ctx->frame_queue = av_fifo_alloc(ctx->nb_surfaces * sizeof(CuvidParsedFrame));
+    if (!ctx->frame_queue) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to recreate frame queue on re-init\n");
+        return 0;
+    }
 
     ctx->internal_error = CHECK_CU(ctx->cvdl->cuvidCreateDecoder(&ctx->cudecoder, &cuinfo));
     if (ctx->internal_error < 0)
@@ -357,6 +365,13 @@ static int CUDAAPI cuvid_handle_picture_display(void *opaque, CUVIDPARSERDISPINF
     return 1;
 }
 
+static int cuvid_is_buffer_full(AVCodecContext *avctx)
+{
+    CuvidContext *ctx = avctx->priv_data;
+
+    return (av_fifo_size(ctx->frame_queue) / sizeof(CuvidParsedFrame)) + 2 > ctx->nb_surfaces;
+}
+
 static int cuvid_decode_packet(AVCodecContext *avctx, const AVPacket *avpkt)
 {
     CuvidContext *ctx = avctx->priv_data;
@@ -373,7 +388,7 @@ static int cuvid_decode_packet(AVCodecContext *avctx, const AVPacket *avpkt)
     if (is_flush && avpkt && avpkt->size)
         return AVERROR_EOF;
 
-    if ((av_fifo_size(ctx->frame_queue) / sizeof(CuvidParsedFrame)) + 2 > ctx->nb_surfaces && avpkt && avpkt->size)
+    if (cuvid_is_buffer_full(avctx) && avpkt && avpkt->size)
         return AVERROR(EAGAIN);
 
     if (ctx->bsf && avpkt && avpkt->size) {
@@ -780,9 +795,17 @@ static av_cold int cuvid_decode_init(AVCodecContext *avctx)
             goto error;
         }
     } else {
-        ret = av_hwdevice_ctx_create(&ctx->hwdevice, AV_HWDEVICE_TYPE_CUDA, ctx->cu_gpu, NULL, 0);
-        if (ret < 0)
-            goto error;
+        if (avctx->hw_device_ctx) {
+            ctx->hwdevice = av_buffer_ref(avctx->hw_device_ctx);
+            if (!ctx->hwdevice) {
+                ret = AVERROR(ENOMEM);
+                goto error;
+            }
+        } else {
+            ret = av_hwdevice_ctx_create(&ctx->hwdevice, AV_HWDEVICE_TYPE_CUDA, ctx->cu_gpu, NULL, 0);
+            if (ret < 0)
+                goto error;
+        }
 
         ctx->hwframe = av_hwframe_ctx_alloc(ctx->hwdevice);
         if (!ctx->hwframe) {
